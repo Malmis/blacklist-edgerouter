@@ -281,3 +281,45 @@ Skriptet kommer att:
 tail -n 50 /config/scripts/.blacklist_state/adblock.log
 tail -n 50 /config/scripts/.blacklist_state/runs.log
 ```
+
+---
+
+## Hantera adblock-whitelist
+
+För att undanta vissa domäner från adblock:
+
+1. **Skapa whitelist-fil om den inte finns:**
+```bash
+sudo mkdir -p /config/blacklist
+sudo touch /config/blacklist/adblock-whitelist.txt
+```
+
+2. **Lägg till domäner i filen:**
+- Exakt domän: `example.com`
+- Alla underdomäner: `.example.com`
+
+Exempel:
+```bash
+echo "netflix.com" >> /config/blacklist/adblock-whitelist.txt
+echo ".spotify.com" >> /config/blacklist/adblock-whitelist.txt
+echo "youtube.com" >> /config/blacklist/adblock-whitelist.txt
+```
+
+3. **Kör uppdatering med adblock:**
+```bash
+/config/scripts/blacklist.sh --adblock
+```
+
+Skriptet kommer att:
+- Hämta alla adblock-källor (OISD, StevenBlack, 1Hosts Lite, AdGuard DNS filter).
+- Konvertera till dnsmasq-format.
+- Ta bort alla domäner som matchar whitelist.
+- Aktivera adblock via dnsmasq.
+
+4. **Kontrollera loggar:**
+```bash
+tail -n 50 /config/scripts/.blacklist_state/adblock.log
+tail -n 50 /config/scripts/.blacklist_state/runs.log
+```
+
+> **Tips:** Du kan lägga till streamingtjänster, sociala medier och spelplattformar i whitelist för att undvika problem med appar.
