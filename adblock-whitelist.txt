@@ -1,4 +1,4 @@
-# Adblock whitelist for streaming, social media, messaging & gaming
+# Adblock whitelist for streaming, social media, messaging, gaming & DNS services
 
 # SVT & TV4
 svtplay.se
@@ -122,6 +122,24 @@ roblox.com
 rbxcdn.com
 minecraft.net
 mojang.com
+
+# DNS Services
+# OpenDNS
+opendns.com
+opendns.org
+dns.opendns.com
+resolver1.opendns.com
+resolver2.opendns.com
+
+# Cloudflare DNS
+cloudflare-dns.com
+1.1.1.1
+1.0.0.1
+
+# Google DNS
+dns.google
+8.8.8.8
+8.8.4.4
 
 # Canal Digital / Allente
 allente.se
