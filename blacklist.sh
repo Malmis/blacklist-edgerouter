@@ -9,10 +9,8 @@
 # AWS CloudFront IP ranges:           https://ip-ranges.amazonaws.com/ip-ranges.json  och  https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips
 # Google Cloud IP ranges (cloud.json):https://www.gstatic.com/ipranges/cloud.json
 # Azure CDN Edge Nodes (API, kräver auth) – community mirror: https://raw.githubusercontent.com/Gelob/azure-cdn-ips/master/edgenodes-ipv4.txt
-# (Källor: Cloudflare docs, Fastly API docs, AWS VPC/CloudFront docs, Google Cloud docs, Azure CDN edge nodes API/mirror)
 #
 # Notis: Akamai har mycket omfattande prefix (tusentals). Generell CIDR-whitelist av Akamai rekommenderas inte.
-# Se: AWS/CloudFront ranges dokumentation & Cloudflare/Fastly officiella sidor för kontinuerlig uppdatering.
 
 set -Eeuo pipefail
 
@@ -49,8 +47,15 @@ FETCH_CDN_WHITELIST="${FETCH_CDN_WHITELIST:-1}"   # 1 = hämta CDN-ranges dynami
 CDN_PROVIDERS="${CDN_PROVIDERS:-cloudflare fastly cloudfront google azure cdn77 stackpath edgecast}"
 CDN_FETCH_TIMEOUT="${CDN_FETCH_TIMEOUT:-240}"     # sekunder per hämtning
 CDN_ALLOW_IPV6="${CDN_ALLOW_IPV6:-0}"             # framtida: hämta IPv6 också (ej tillämpat i firewall-gruppen som är IPv4)
-# Statisk extra whitelist kan fyllas via arrayen nedan eller miljövariabeln WHITELIST_CIDR:
-# Ex: export WHITELIST_CIDR=("1.2.3.0/24" "4.5.6.0/24")
+
+WHITELIST_CIDR=(
+  "203.0.113.0/24"
+  "1.1.1.1/32"
+  "1.0.0.1/32"
+  "8.8.4.4/32"
+  "8.8.8.8/32"
+  "9.9.9.9/32"
+)
 
 # --[ STATS-flagga ]--
 if [ "${1:-}" = "--adblock-stats" ] || [ "${2:-}" = "--adblock-stats" ]; then
@@ -175,11 +180,9 @@ build_dynamic_cdn_whitelist_v4() {
   if echo "$CDN_PROVIDERS" | grep -qw "cloudfront"; then
     local cfv="$WORK/cloudfront_v4.txt"
     if fetch "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips" "$cfv"; then
-      # sidan innehåller både v4/v6 – filtrera IPv4
       grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$cfv" >> "$out_raw" || true
       log "[cdn] CloudFront prefixes (v4) hämtade (tools-list)"
     else
-      # fallback: ip-ranges.json (filtrera service=CLOUDFRONT, region=GLOBAL)
       local aws="$WORK/ip-ranges.json"
       if fetch "https://ip-ranges.amazonaws.com/ip-ranges.json" "$aws"; then
         awk '
@@ -280,12 +283,14 @@ if (( FETCH_CDN_WHITELIST == 1 )); then
 fi
 
 # Applicera whitelist: kombinera dynamisk CDN-fil + ev. statiska WHITELIST_CIDR
-if [[ -n "$CDN_WL_FILE" || ${#WHITELIST_CIDR[@]} -gt 0 ]]; then
+if [[ -n "$CDN_WL_FILE" || ${#WHITELIST_CIDR[@]} > 0 ]]; then
   WL="$WORK/whitelist_cidr.txt"
   : > "$WL"
   # Lägg statiska array-värden
   if (( ${#WHITELIST_CIDR[@]} > 0 )); then
-    printf "%s\n" "${WHITELIST_CIDR[@]}" | tr -d '\r' | validate_cidr >> "$WL"
+    printf "%s\n" "${WHITELIST_CIDR[@]}" \
+      | tr -d '\r' \
+      | validate_cidr >> "$WL"
   fi
   # Lägg dynamiska CDN-prefix
   if [[ -n "$CDN_WL_FILE" && -s "$CDN_WL_FILE" ]]; then
@@ -298,6 +303,26 @@ if [[ -n "$CDN_WL_FILE" || ${#WHITELIST_CIDR[@]} -gt 0 ]]; then
     cp "$FILTERED" "$WORK/filtered_cidr_nowl.txt"
   fi
   mv "$WORK/filtered_cidr_nowl.txt" "$FILTERED"
+
+  # --- [LOGGNING] Räkna whitelistade nät (CIDR) ---
+  CIDR_WL_TOTAL=0
+  CIDR_WL_CDN=0
+  CIDR_WL_STATIC=0
+
+  if [[ -n "$CDN_WL_FILE" && -s "$CDN_WL_FILE" ]]; then
+    CIDR_WL_CDN=$(wc -l < "$CDN_WL_FILE" 2>/dev/null || echo 0)
+  fi
+  if (( ${#WHITELIST_CIDR[@]} > 0 )); then
+    # Räkna rader i WL och subtracta CDN för att få statisk del
+    if [[ -f "$WL" ]]; then
+      CIDR_WL_STATIC=$(( $(wc -l < "$WL" 2>/dev/null || echo 0) - CIDR_WL_CDN ))
+      [[ $CIDR_WL_STATIC -lt 0 ]] && CIDR_WL_STATIC=0
+    fi
+  fi
+
+  CIDR_WL_TOTAL=$(( CIDR_WL_CDN + CIDR_WL_STATIC ))
+  log "[cidr-whitelist] total=${CIDR_WL_TOTAL} cdn=${CIDR_WL_CDN} static=${CIDR_WL_STATIC}"
+  echo "[cidr-whitelist] total=${CIDR_WL_TOTAL} cdn=${CIDR_WL_CDN} static=${CIDR_WL_STATIC}" >> "${STATE_LOG}"
 fi
 
 COUNT=$(wc -l < "$FILTERED" 2>/dev/null || echo 0)
@@ -364,6 +389,8 @@ summary_block() {
   echo " Önskade (efter): ${FINAL_COUNT}"
   echo " ADDs: ${ADDN} DELs: ${DELN} Netto: ${NET_CHANGE}"
   echo " Förväntat antal (efter commit): ${NEW_CUR_PRED}"
+  # Visa även CIDR-whitelist-siffror
+  echo " CIDR-whitelist: total=${CIDR_WL_TOTAL} (cdn=${CIDR_WL_CDN}, static=${CIDR_WL_STATIC})"
   if [[ -n "${PREV_TS}" ]]; then
     echo "Föregående körning (${PREV_TS}): current=${PREV_CUR}, final=${PREV_FIN}, adds=${PREV_ADD}, dels=${PREV_DEL}, netto=${PREV_NET}"
     echo "Skillnad sedan föregående:"
@@ -372,6 +399,7 @@ summary_block() {
     echo "Ingen tidigare körning registrerad."
   fi
 }
+
 append_history() {
   # 1) TSV (maskinläsbar historik) – append
   printf "%s\t%d\t%d\t%d\t%d\t%d\n" "${NOW_TS}" \
@@ -392,6 +420,7 @@ append_history() {
     echo "final=${FINAL_COUNT}"
     echo "adds=${ADDN} dels=${DELN} net=${NET_CHANGE}"
     echo "predicted_after=${NEW_CUR_PRED}"
+    echo "cidr_whitelist_total=${CIDR_WL_TOTAL} cdn=${CIDR_WL_CDN} static=${CIDR_WL_STATIC}"
     if [[ -n "${PREV_TS}" ]]; then
       echo "prev_ts=${PREV_TS} prev_current=${PREV_CUR} prev_final=${PREV_FIN} prev_adds=${PREV_ADD} prev_dels=${PREV_DEL} prev_net=${PREV_NET}"
       echo "delta_current=$((NEW_CUR_PRED - PREV_CUR)) delta_final=$((FINAL_COUNT - PREV_FIN)) delta_adds=$((ADDN - PREV_ADD)) delta_dels=$((DELN - PREV_DEL)) delta_net=$((NET_CHANGE - PREV_NET))"
@@ -472,6 +501,7 @@ POST_COUNT=$(sed -E "s/^set firewall group network-group ${GROUP_NET} network //
   echo " Efter (current): ${POST_COUNT}"
   echo " Önskade (final): ${FINAL_COUNT}"
   echo " ADDs: ${ADDN} DELs: ${DELN} Netto: ${NET_CHANGE}"
+  echo " CIDR-whitelist: total=${CIDR_WL_TOTAL} (cdn=${CIDR_WL_CDN}, static=${CIDR_WL_STATIC})"
   if [[ -n "${PREV_TS}" ]]; then
     echo "Föregående körning (${PREV_TS}): current=${PREV_CUR}, final=${PREV_FIN}, adds=${PREV_ADD}, dels=${PREV_DEL}, netto=${PREV_NET}"
     echo "Skillnad sedan föregående:"
@@ -557,13 +587,40 @@ apply_adblock_whitelist() {
   local file="$1"
   local wl_norm="$WORK/adblock-wl.norm"
   normalize_whitelist "$wl_norm"
-  [ -s "$wl_norm" ] || return 0
+  [[ -s "$wl_norm" ]] || return 0
 
+  # Räkna regler före whitelist
+  local before after removed wl_domains
+  before=$(grep -E '^[[:space:]]*address=/[A-Za-z0-9.-]+/0\.0\.0\.0[[:space:]]*$' "$file" | wc -l | tr -d ' ' || echo 0)
+  wl_domains=$(wc -l < "$wl_norm" 2>/dev/null || echo 0)
+
+  # Ta bort både exakt och wildcard (subdomäner) för varje whitelistad domän
   while IFS= read -r d; do
-    [ -n "$d" ] || continue
+    [[ -n "$d" ]] || continue
     local d_esc; d_esc="$(printf '%s' "$d" | sed 's/\./\\./g')"
+    sed -i -E "/^address\/(${d_esc}|([^.\/]*\.)*${d_esc})\/0\.0\.0\.0$/d" "$file"
+    # dnsmasq med "="-syntax:
     sed -i -E "/^address=\/(${d_esc}|([^.\/]*\.)*${d_esc})\/0\.0\.0\.0$/d" "$file"
   done < "$wl_norm"
+
+  # Räkna efter whitelist
+  after=$(grep -E '^[[:space:]]*address=/[A-Za-z0-9.-]+/0\.0\.0\.0[[:space:]]*$' "$file" | wc -l | tr -d ' ' || echo 0)
+  removed=$(( before - after ))
+  (( removed < 0 )) && removed=0
+
+  # Logga det här både i adblock.log och runs.log
+  {
+    echo "=== $(date -u +'%Y-%m-%d %H:%M:%SZ') ==="
+    echo "wl_domains=${wl_domains}"
+    echo "rules_before=${before}"
+    echo "rules_after=${after}"
+    echo "rules_removed_by_whitelist=${removed}"
+    echo "conf_path=${ADBLOCK_CONF}"
+    echo
+  } >> "$ADBLOCK_LOG"
+
+  echo "[adblock-wl] wl_domains=${wl_domains} removed=${removed} before=${before} after=${after}" >> "${STATE_LOG}"
+  log "[adblock-wl] removed=${removed} (before=${before}, after=${after}, wl_domains=${wl_domains})"
 }
 
 # Inbyggda adblock-källor (kan uteslutas via ADBLOCK_EXCLUDE_SOURCES)
@@ -594,7 +651,7 @@ build_adblock_sources() {
   if should_include "stevenblack"; then
     printf "%s\tstevenblack\n" "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" >> "$list_file"
   fi
-  # 3) 1Hosts Lite (hosts-format)
+  # 3) 1Hosts Lite (dnsmasq-konf)
   if should_include "1hosts-lite"; then
     printf "%s\t1hosts-lite\n" "https://badmojr.github.io/1Hosts/Lite/dnsmasq.conf" >> "$list_file"
   fi
@@ -602,11 +659,7 @@ build_adblock_sources() {
   if should_include "adguard"; then
     printf "%s\tadguard\n" "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" >> "$list_file"
   fi
-  # 5) Malmis DNS filter (ren domänlista)
-  if should_include "malmis"; then
-    printf "%s\tmalmis\n" "https://raw.githubusercontent.com/Malmis/blacklist-edgerouter/refs/heads/main/swedish_and_more.txt" >> "$list_file"
-  fi
-  # 6) Valfria extra källor via miljövariabel
+  # 5) Valfria extra källor via miljövariabel
   if [ -n "$ADBLOCK_EXTRA_URLS" ]; then
     for u in $ADBLOCK_EXTRA_URLS; do
       printf "%s\textra\n" "$u" >> "$list_file"
