@@ -236,14 +236,20 @@ commit; save; exit
 
 ## Felsökning
 * **unexpected member not found […] vid commit**
- unexpected member not found […] vid commit
+
+unexpected member not found […] vid commit
+
 *** Kör repair-blacklist.sh
 *** Kör blacklist.sh igen.
+
 * **validateSetPath() without config session / sessionsfel**
+
 Kommer av config‑kommandon utanför giltig session. Dessa skript använder endast wrapper‑binärerna, vilket undviker session‑mismatch.
 
 * Inspektera tempdata
+
 Kör med KEEP_WORK=1 och titta i /tmp/blacklist_cidr.*:
+
 ** to_del.txt — vilka medlemmar tas bort
 ** to_add.txt — vilka läggs till
 ** current_cidr.txt — vad som fanns före
