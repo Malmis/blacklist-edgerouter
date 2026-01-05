@@ -17,17 +17,17 @@ TMP_BASE="/tmp/blacklist_cidr"
 MAX_NETS=0 # 0 = ingen begränsning; sätt t.ex. 5000
 
 # ---- Dry-run & state/historik ----
-DRY_RUN="${DRY_RUN:-0}"       # 1 = dry-run (ingen commit)
-DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}" # antal rader att visa i listor
-KEEP_WORK="${KEEP_WORK:-0}"   # 1 = behåll tempkatalogen
-
-# ---[ AD-BLOCK toggles ]---
-ADBLOCK=${ADBLOCK:-1}  # sätt till 1 för att köra adblock automatiskt, eller använd --adblock
+DRY_RUN="${DRY_RUN:-0}"          # 1 = dry-run (ingen commit)
+DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}"  # antal rader att visa i listor
+KEEP_WORK="${KEEP_WORK:-0}"      # 1 = behåll tempkatalogen
 
 STATE_DIR="/config/scripts/.blacklist_state"
 STATE_TSV="${STATE_DIR}/summary.tsv" # maskinläsbar historik (TSV)
 STATE_LOG="${STATE_DIR}/runs.log"    # lättläst logg per körning
 MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt)
+
+# ---[ AD-BLOCK toggles ]---
+ADBLOCK=${ADBLOCK:-1}  # sätt till 1 för att köra adblock automatiskt, eller använd --adblock
 
 # CLI-flagga
 if [[ "${1-}" == "--dry-run" ]]; then DRY_RUN=1; fi
@@ -333,6 +333,10 @@ log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
 # Faller automatiskt tillbaka till OISD 'dnsmasq' (äldre syntax) om testet inte passerar.
 # Se: OISD dnsmasq/dnsmasq2 och oznu-guide för EdgeRouter.  # refs
 
+ensure_dnsmasq_dirs() {
+  [ -d "/etc/dnsmasq.d" ] || mkdir -p "/etc/dnsmasq.d"
+}
+
 update_adblock_dnsmasq() {
   ensure_dnsmasq_dirs
   local tmp="/tmp/adblock.$$"
@@ -353,7 +357,7 @@ update_adblock_dnsmasq() {
 
   # Testa den nedladdade filen med absolut sökväg
   if ! "$DQSM" --test --conf-file="$tmp" >/dev/null 2>&1; then
-    echo "[adblock] Validering misslyckades för dnsmasq2 ($( "$DQSM" -v | head -n1 )). Försöker fallback..."
+    echo "[adblock] Validering misslyckades för dnsmasq2 ($("$DQSM" -v | head -n1)). Försöker fallback..."
     # Fallback: hämta OISD 'dnsmasq' (äldre syntax) och testa igen
     if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$fallback_url" -o "$tmp"; then
       echo "[adblock] VARNING: Fallback-nedladdning misslyckades."; rm -f "$tmp"; return 2
