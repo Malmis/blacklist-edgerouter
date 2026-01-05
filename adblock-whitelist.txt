@@ -141,6 +141,11 @@ dns.google
 8.8.8.8
 8.8.4.4
 
+# Quad9 DNS
+quad9.net
+dns.quad9.net
+9.9.9.9
+
 # Canal Digital / Allente
 allente.se
 
