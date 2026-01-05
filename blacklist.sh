@@ -604,7 +604,7 @@ build_adblock_sources() {
   fi
   # 5) Malmis DNS filter (ren domänlista)
   if should_include "malmis"; then
-    printf "%s\tmalmis\n" "https://gist.githubusercontent.com/Malmis/bc21b32cfeeea93296cb901c878dfffe/raw/2c9713174aacf502e19680630be669dcbb3b068f/reklamblockering-edgemax.tx" >> "$list_file"
+    printf "%s\tmalmis\n" "https://raw.githubusercontent.com/Malmis/blacklist-edgerouter/refs/heads/main/swedish_and_more.txt" >> "$list_file"
   fi
   # 6) Valfria extra källor via miljövariabel
   if [ -n "$ADBLOCK_EXTRA_URLS" ]; then
