@@ -5,6 +5,11 @@
 # Kör UTAN sudo.
 set -Eeuo pipefail
 
+# Slå av eventuella interaktiva alias så $CFG save inte frågar "mv: overwrite ...?"
+unalias mv 2>/dev/null || true
+unalias cp 2>/dev/null || true
+unalias rm 2>/dev/null || true
+
 # ======= Konfiguration =======
 GROUP_NET="blacklist_net"
 LOG_TAG="blacklist"
@@ -12,18 +17,12 @@ TMP_BASE="/tmp/blacklist_cidr"
 MAX_NETS=0 # 0 = ingen begränsning; sätt t.ex. 5000
 
 # ---- Dry-run & state/historik ----
-DRY_RUN="${DRY_RUN:-0}" # 1 = dry-run (ingen commit)
+DRY_RUN="${DRY_RUN:-0}"       # 1 = dry-run (ingen commit)
 DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}" # antal rader att visa i listor
-KEEP_WORK="${KEEP_WORK:-0}" # 1 = behåll tempkatalogen
+KEEP_WORK="${KEEP_WORK:-0}"   # 1 = behåll tempkatalogen
 
-ADBLOCK=1 # ---[ AD-BLOCK (dnsmasq) – valfritt tillägg, befintlig logik oförändrad ]-----
-# Körs endast på begäran (flaggan --adblock eller ADBLOCK=1).
-# Standardkälla: OISD small i dnsmasq2-format (dnsmasq ≥ 2.86).
-# Validerar filen med 'dnsmasq --test' innan aktivering och gör atomiskt byte.
-# Se: OISD dnsmasq/dnsmasq2 och oznu-guide för EdgeRouter. 
-ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
-ADBLOCK_URL_DEFAULT="https://small.oisd.nl/dnsmasq2"
-ADBLOCK_URL="${ADBLOCK_URL:-$ADBLOCK_URL_DEFAULT}"
+# ---[ AD-BLOCK toggles ]---
+ADBLOCK=${ADBLOCK:-1}  # sätt till 1 för att köra adblock automatiskt, eller använd --adblock
 
 STATE_DIR="/config/scripts/.blacklist_state"
 STATE_TSV="${STATE_DIR}/summary.tsv" # maskinläsbar historik (TSV)
@@ -323,10 +322,16 @@ POST_COUNT=$(sed -E "s/^set firewall group network-group ${GROUP_NET} network //
 } | while read -r line; do log "$line"; done
 
 # Spara historik (post-commit) + trim
-# Anm: i skarp körning sparar vi faktisk "Efter (current)": POST_COUNT
 NEW_CUR_PRED="${POST_COUNT}"
 append_history
 log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
+
+# -----------------------------------------------------------------------------
+# ---[ AD-BLOCK (dnsmasq) – valfritt tillägg, befintlig logik oförändrad ]-----
+# Körs endast på begäran (flaggan --adblock eller ADBLOCK=1).
+# Standardkälla: OISD small i dnsmasq2-format (dnsmasq ≥ 2.86).
+# Faller automatiskt tillbaka till OISD 'dnsmasq' (äldre syntax) om testet inte passerar.
+# Se: OISD dnsmasq/dnsmasq2 och oznu-guide för EdgeRouter.  # refs
 
 ensure_dnsmasq_dirs() {
   [ -d "/etc/dnsmasq.d" ] || mkdir -p "/etc/dnsmasq.d"
@@ -335,21 +340,32 @@ ensure_dnsmasq_dirs() {
 update_adblock_dnsmasq() {
   ensure_dnsmasq_dirs
   local tmp="/tmp/adblock.$$"
+  local primary_url="${ADBLOCK_URL:-https://small.oisd.nl/dnsmasq2}"  # ny syntax (kräver >=2.86)
+  local fallback_url="https://small.oisd.nl/dnsmasq"                  # äldre syntax (passar 2.85)
 
-  echo "[adblock] Hämtar lista från: $ADBLOCK_URL"
-  if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$ADBLOCK_URL" -o "$tmp"; then
-    echo "[adblock] VARNING: Nedladdning misslyckades"; return 1
+  echo "[adblock] Hämtar lista från: $primary_url"
+  if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$primary_url" -o "$tmp"; then
+    echo "[adblock] VARNING: Nedladdning misslyckades (dnsmasq2)."; return 1
   fi
 
-  # Validera att dnsmasq accepterar filen innan aktivering (best practice)
+  # Testa den nedladdade filen
   if ! dnsmasq --test --conf-file="$tmp" >/dev/null 2>&1; then
-    echo "[adblock] FEL: Validering misslyckades – aktiverar inte."; rm -f "$tmp"; return 2
+    echo "[adblock] Validering misslyckades för dnsmasq2 (du kör $(dnsmasq -v | head -n1)). Försöker fallback..."
+    # Fallback: hämta OISD 'dnsmasq' (äldre syntax) och testa igen
+    if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$fallback_url" -o "$tmp"; then
+      echo "[adblock] VARNING: Fallback-nedladdning misslyckades."; rm -f "$tmp"; return 2
+    fi
+    if ! dnsmasq --test --conf-file="$tmp" >/dev/null 2>&1; then
+      echo "[adblock] FEL: Validering misslyckades även med fallback. Aktiverar inte."
+      rm -f "$tmp"; return 2
+    fi
+    echo "[adblock] Fallback giltig – använder 'dnsmasq' format (kompatibelt med 2.85)."
   fi
 
   # Atomiskt byte och restart
-  mv "$tmp" "$ADBLOCK_CONF"
+  mv "$tmp" "/etc/dnsmasq.d/adblock.conf"
   if /etc/init.d/dnsmasq restart; then
-    echo "[adblock] Aktiverad via $ADBLOCK_CONF"
+    echo "[adblock] Aktiverad via /etc/dnsmasq.d/adblock.conf"
   else
     echo "[adblock] VARNING: dnsmasq restart misslyckades – kontrollera loggar"; return 3
   fi
