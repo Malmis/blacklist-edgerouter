@@ -239,8 +239,8 @@ commit; save; exit
 
 unexpected member not found […] vid commit
 
- Kör repair-blacklist.sh
-* * Kör blacklist.sh igen.
+* Kör repair-blacklist.sh
+* Kör blacklist.sh igen.
 
 * **validateSetPath() without config session / sessionsfel**
 
@@ -263,4 +263,5 @@ Kör med `KEEP_WORK=1` och titta i `/tmp/blacklist_cidr.*`:
 * **Källor:** FireHOL-listor (DShield/Level1):
   * https://iplists.firehol.org/files/dshield.netset
   * https://iplists.firehol.org/files/firehol_level1.netset
+  
 Säkerhetstips: Whitelista dina administrativa IP‑områden (jump hosts, monitorering etc.) för att undvika oavsiktliga avstängningar.
