@@ -2,6 +2,18 @@
 # EdgeRouter Blacklist (CIDR → network-group) – diff-uppdatering i två faser + dry-run + sammanfattning + historik
 # Uppdaterar firewall network-group: blacklist_net
 # Kör UTAN sudo (scriptet hanterar sudo vid behov för /etc/dnsmasq.d).
+#
+# === Källor / referenser för auto-whitelist av CDN CIDR ===
+# Cloudflare IP ranges (officiellt): https://www.cloudflare.com/ips/          [IPv4: /ips-v4, IPv6: /ips-v6]
+# Fastly public IP list (API):        https://api.fastly.com/public-ip-list
+# AWS CloudFront IP ranges:           https://ip-ranges.amazonaws.com/ip-ranges.json  och  https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips
+# Google Cloud IP ranges (cloud.json):https://www.gstatic.com/ipranges/cloud.json
+# Azure CDN Edge Nodes (API, kräver auth) – community mirror: https://raw.githubusercontent.com/Gelob/azure-cdn-ips/master/edgenodes-ipv4.txt
+# (Källor: Cloudflare docs, Fastly API docs, AWS VPC/CloudFront docs, Google Cloud docs, Azure CDN edge nodes API/mirror)
+#
+# Notis: Akamai har mycket omfattande prefix (tusentals). Generell CIDR-whitelist av Akamai rekommenderas inte.
+# Se: AWS/CloudFront ranges dokumentation & Cloudflare/Fastly officiella sidor för kontinuerlig uppdatering.
+
 set -Eeuo pipefail
 
 # Slå av eventuella interaktiva alias så $CFG save inte frågar "mv: overwrite ...?"
@@ -16,9 +28,9 @@ TMP_BASE="/tmp/blacklist_cidr"
 MAX_NETS=0 # 0 = ingen begränsning; sätt t.ex. 5000
 
 # ---- Dry-run & state/historik ----
-DRY_RUN="${DRY_RUN:-0}"           # 1 = dry-run (ingen commit)
+DRY_RUN="${DRY_RUN:-0}"            # 1 = dry-run (ingen commit)
 DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}" # antal rader att visa i listor
-KEEP_WORK="${KEEP_WORK:-0}"       # 1 = behåll tempkatalogen
+KEEP_WORK="${KEEP_WORK:-0}"        # 1 = behåll tempkatalogen
 STATE_DIR="/config/scripts/.blacklist_state"
 STATE_TSV="${STATE_DIR}/summary.tsv"   # maskinläsbar historik (TSV)
 STATE_LOG="${STATE_DIR}/runs.log"      # lättläst logg per körning
@@ -32,13 +44,13 @@ ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt" # en domän per rad
 ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
 ADBLOCK_LOG="${STATE_DIR}/adblock.log"
 
-# Extra konfig för flera källor:
-# Mellanslagsseparerad lista av ytterligare källor (valfritt)
-ADBLOCK_EXTRA_URLS="${ADBLOCK_EXTRA_URLS:-}"
-# Uteslut inbyggda källor genom att namnge dem här (t.ex. "oisd stevenblack")
-ADBLOCK_EXCLUDE_SOURCES="${ADBLOCK_EXCLUDE_SOURCES:-}"
-# Max tid (sekunder) per nedladdning
-ADBLOCK_FETCH_TIMEOUT="${ADBLOCK_FETCH_TIMEOUT:-240}"
+# ---[ CDN CIDR auto-whitelist ]---
+FETCH_CDN_WHITELIST="${FETCH_CDN_WHITELIST:-1}"   # 1 = hämta CDN-ranges dynamiskt varje körning
+CDN_PROVIDERS="${CDN_PROVIDERS:-cloudflare fastly cloudfront google azure cdn77 stackpath edgecast}"
+CDN_FETCH_TIMEOUT="${CDN_FETCH_TIMEOUT:-240}"     # sekunder per hämtning
+CDN_ALLOW_IPV6="${CDN_ALLOW_IPV6:-0}"             # framtida: hämta IPv6 också (ej tillämpat i firewall-gruppen som är IPv4)
+# Statisk extra whitelist kan fyllas via arrayen nedan eller miljövariabeln WHITELIST_CIDR:
+# Ex: export WHITELIST_CIDR=("1.2.3.0/24" "4.5.6.0/24")
 
 # --[ STATS-flagga ]--
 if [ "${1:-}" = "--adblock-stats" ] || [ "${2:-}" = "--adblock-stats" ]; then
@@ -75,8 +87,8 @@ done
 
 fetch() {
   local url="$1" out="$2"
-  if have curl; then curl -fsSL --connect-timeout 15 --max-time "$ADBLOCK_FETCH_TIMEOUT" -o "$out" "$url"
-  elif have wget; then wget -q -T "$ADBLOCK_FETCH_TIMEOUT" -O "$out" "$url"
+  if have curl; then curl -fsSL --connect-timeout 15 --max-time "$CDN_FETCH_TIMEOUT" -o "$out" "$url"
+  elif have wget; then wget -q -T "$CDN_FETCH_TIMEOUT" -O "$out" "$url"
   else log "FEL: varken curl eller wget finns"; exit 1; fi
 }
 
@@ -130,15 +142,158 @@ tr -d '\r' < "$ALL_CIDR" \
   | filter_reserved_cidr \
   | sort -u > "$FILTERED"
 
+# ======= [PATCH] Auto-hämtning av CDN CIDR whitelist (IPv4) =======
+# Bygger dynamisk whitelist från stora CDN:er och applicerar den tillsammans med ev. statisk WHITELIST_CIDR.
+build_dynamic_cdn_whitelist_v4() {
+  local out_raw="$WORK/cdn_whitelist_v4.raw"
+  local out="$WORK/cdn_whitelist_v4.txt"
+  : > "$out_raw"
+
+  # --- Cloudflare (officiell lista) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "cloudflare"; then
+    local cf="$WORK/cloudflare_v4.txt"
+    if fetch "https://www.cloudflare.com/ips-v4" "$cf"; then
+      grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$cf" >> "$out_raw" || true
+      log "[cdn] Cloudflare prefixes (v4) hämtade"
+    else
+      log "[cdn] VARNING: kunde inte hämta Cloudflare v4"
+    fi
+  fi
+
+  # --- Fastly (API JSON) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "fastly"; then
+    local fa="$WORK/fastly.json"
+    if fetch "https://api.fastly.com/public-ip-list" "$fa"; then
+      grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "$fa" >> "$out_raw" || true
+      log "[cdn] Fastly prefixes (v4) hämtade"
+    else
+      log "[cdn] VARNING: kunde inte hämta Fastly"
+    fi
+  fi
+
+  # --- CloudFront (dedikerad lista → fallback ip-ranges.json) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "cloudfront"; then
+    local cfv="$WORK/cloudfront_v4.txt"
+    if fetch "https://d7uri8nf7uskq.cloudfront.net/tools/list-cloudfront-ips" "$cfv"; then
+      # sidan innehåller både v4/v6 – filtrera IPv4
+      grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$cfv" >> "$out_raw" || true
+      log "[cdn] CloudFront prefixes (v4) hämtade (tools-list)"
+    else
+      # fallback: ip-ranges.json (filtrera service=CLOUDFRONT, region=GLOBAL)
+      local aws="$WORK/ip-ranges.json"
+      if fetch "https://ip-ranges.amazonaws.com/ip-ranges.json" "$aws"; then
+        awk '
+          BEGIN{ s=0 }
+          /"service"[[:space:]]*:[[:space:]]*"CLOUDFRONT"/{ s=1 }
+          /"service"[[:space:]]*:[[:space:]]*"/ && $0 !~ /CLOUDFRONT/{ s=0 }
+          s && /"ip_prefix"/{
+            match($0,/"ip_prefix"[[:space:]]*:[[:space:]]*"[0-9.\/]+"/,m)
+            if(m[0]!=""){
+              gsub(/"ip_prefix"[[:space:]]*:[[:space:]]*"/,"",m[0])
+              gsub(/"/,"",m[0]); print m[0]
+            }
+          }' "$aws" >> "$out_raw" || true
+        log "[cdn] CloudFront prefixes (v4) hämtade (ip-ranges.json)"
+      else
+        log "[cdn] VARNING: kunde inte hämta CloudFront"
+      fi
+    fi
+  fi
+
+  # --- Google Cloud (cloud.json) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "google"; then
+    local ggl="$WORK/google-cloud.json"
+    if fetch "https://www.gstatic.com/ipranges/cloud.json" "$ggl"; then
+      grep -Eo '"ipv4Prefix":[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+)"' "$ggl" \
+        | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+)".*/\1/' >> "$out_raw" || true
+      log "[cdn] Google Cloud prefixes (v4) hämtade"
+    else
+      log "[cdn] VARNING: kunde inte hämta Google cloud.json"
+    fi
+  fi
+
+  # --- Azure CDN Edge Nodes (community mirror) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "azure"; then
+    local az="$WORK/azure-cdn-v4.txt"
+    if fetch "https://raw.githubusercontent.com/Gelob/azure-cdn-ips/master/edgenodes-ipv4.txt" "$az"; then
+      grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$az" >> "$out_raw" || true
+      log "[cdn] Azure CDN edge prefixes (v4) hämtade (mirror)"
+    else
+      log "[cdn] VARNING: kunde inte hämta Azure CDN mirror"
+    fi
+  fi
+
+  # --- CDN77 (prefixlists JSON – plocka IPv4 med regex) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "cdn77"; then
+    local c77="$WORK/cdn77.json"
+    if fetch "https://prefixlists.tools.cdn77.com/public_lmax_prefixes.json" "$c77"; then
+      grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' "$c77" >> "$out_raw" || true
+      log "[cdn] CDN77 prefixes (v4) hämtade"
+    else
+      log "[cdn] VARNING: kunde inte hämta CDN77"
+    fi
+  fi
+
+  # --- StackPath (begränsad publik info; lägg statiska välkända block) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "stackpath"; then
+    cat <<'EOF' >> "$out_raw"
+67.14.160.0/21
+67.14.168.0/22
+EOF
+    log "[cdn] StackPath prefixes (v4) tillagda (statisk)"
+  fi
+
+  # --- Edgecast/Verizon (statisk bas – välkända blocks) ---
+  if echo "$CDN_PROVIDERS" | grep -qw "edgecast"; then
+    cat <<'EOF' >> "$out_raw"
+93.184.212.0/22
+93.184.220.0/22
+72.21.80.0/24
+192.16.32.0/24
+192.229.129.0/24
+192.229.150.0/24
+192.229.168.0/24
+192.229.186.0/24
+192.229.211.0/24
+198.7.16.0/24
+EOF
+    log "[cdn] Edgecast prefixes (v4) tillagda (statisk)"
+  fi
+
+  # Normalisera, validera, deduplicera
+  tr -d '\r' < "$out_raw" | validate_cidr | sort -u > "$out"
+  local cnt; cnt=$(wc -l < "$out" 2>/dev/null || echo 0)
+  log "[cdn] Dynamisk CDN-whitelist (IPv4) innehåller ${cnt} prefix"
+
+  # Returnera sökväg via echo
+  echo "$out"
+}
+
 # ======= Whitelist för CIDR (array är valfri) =======
 # Undvik "unbound variable" med set -u: initiera tom array om den saknas.
 if [ -z "${WHITELIST_CIDR+x}" ]; then WHITELIST_CIDR=(); fi
-if (( ${#WHITELIST_CIDR[@]} > 0 )); then
+
+# Bygg dynamisk CDN-whitelist om flaggan är satt
+CDN_WL_FILE=""
+if (( FETCH_CDN_WHITELIST == 1 )); then
+  CDN_WL_FILE="$(build_dynamic_cdn_whitelist_v4)"
+fi
+
+# Applicera whitelist: kombinera dynamisk CDN-fil + ev. statiska WHITELIST_CIDR
+if [[ -n "$CDN_WL_FILE" || ${#WHITELIST_CIDR[@]} -gt 0 ]]; then
   WL="$WORK/whitelist_cidr.txt"
-  printf "%s\n" "${WHITELIST_CIDR[@]}" \
-    | tr -d '\r' \
-    | validate_cidr \
-    | sort -u > "$WL"
+  : > "$WL"
+  # Lägg statiska array-värden
+  if (( ${#WHITELIST_CIDR[@]} > 0 )); then
+    printf "%s\n" "${WHITELIST_CIDR[@]}" | tr -d '\r' | validate_cidr >> "$WL"
+  fi
+  # Lägg dynamiska CDN-prefix
+  if [[ -n "$CDN_WL_FILE" && -s "$CDN_WL_FILE" ]]; then
+    cat "$CDN_WL_FILE" >> "$WL"
+  fi
+  # Deduplicera whitelist
+  sort -u -o "$WL" "$WL"
+  # Filtrera bort whitelistade prefix från blocklistan
   if ! grep -Fv -f "$WL" "$FILTERED" > "$WORK/filtered_cidr_nowl.txt"; then
     cp "$FILTERED" "$WORK/filtered_cidr_nowl.txt"
   fi
@@ -345,7 +500,7 @@ count_adblock_events() {
   local logf="/var/log/messages"
   local count=0
   if [ -f "$logf" ]; then
-    local today="$(date '+%b %e')" # ex "Jan  5" (obs två mellanslag för ensiffrig dag)
+    local today="$(date '+%b %e')" # ex "Jan  5" (två mellanslag vid ensiffrig dag)
     count=$(tail -n 20000 "$logf" \
       | grep -F "$today" \
       | grep -E 'dnsmasq' \
@@ -368,8 +523,7 @@ normalize_whitelist() {
   fi
 }
 
-# Upptäck format och konvertera till dnsmasq address=/domain/0.0.0.0
-# Stöd: dnsmasq (address=/d/0.0.0.0), hosts (0.0.0.0 d eller 127.0.0.1 d), ren domänlista
+# Konvertera blandade format till dnsmasq address=/domain/0.0.0.0
 to_dnsmasq_rules() {
   local in="$1" out="$2"
   awk '
@@ -383,9 +537,7 @@ to_dnsmasq_rules() {
     {
       raw=$0
       # Behåll dnsmasq-regler direkt
-      if (raw ~ /^[[:space:]]*address=\/[A-Za-z0-9.-]+\/0\.0\.0\.0[[:space:]]*$/) {
-        print trim(raw); next
-      }
+      if (raw ~ /^[[:space:]]*address=\/[A-Za-z0-9.-]+\/0\.0\.0\.0[[:space:]]*$/) { print trim(raw); next }
       if (is_comment(raw) || raw ~ /^[[:space:]]*$/) next
       line=trim(raw)
       # hosts-format
@@ -407,18 +559,17 @@ apply_adblock_whitelist() {
   normalize_whitelist "$wl_norm"
   [ -s "$wl_norm" ] || return 0
 
-  # Ta bort både exact och wildcard (subdomäner) för varje whitelistad domän
-  # address=/sub.domain.tld/0.0.0.0 och address=/anything.domain.tld/0.0.0.0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
-    # Escapa punkter
-    local d_esc
-    d_esc="$(printf '%s' "$d" | sed 's/\./\\./g')"
+    local d_esc; d_esc="$(printf '%s' "$d" | sed 's/\./\\./g')"
     sed -i -E "/^address=\/(${d_esc}|([^.\/]*\.)*${d_esc})\/0\.0\.0\.0$/d" "$file"
   done < "$wl_norm"
 }
 
-# Inbyggda källor (kan uteslutas via ADBLOCK_EXCLUDE_SOURCES)
+# Inbyggda adblock-källor (kan uteslutas via ADBLOCK_EXCLUDE_SOURCES)
+ADBLOCK_EXTRA_URLS="${ADBLOCK_EXTRA_URLS:-}"
+ADBLOCK_EXCLUDE_SOURCES="${ADBLOCK_EXCLUDE_SOURCES:-}"
+
 should_include() {
   local name="$1"
   case " $ADBLOCK_EXCLUDE_SOURCES " in
@@ -427,37 +578,30 @@ should_include() {
   esac
 }
 
-# Returnera lista av URL:er att använda (inkl. primär, inbyggda, extra)
 build_adblock_sources() {
   local list_file="$1"
   : > "$list_file"
-
   # 0) Miljö-override: ADBLOCK_URL (primär)
   if [ -n "$ADBLOCK_URL" ]; then
     printf "%s\tprimary\n" "$ADBLOCK_URL" >> "$list_file"
   fi
-
   # 1) OISD (dnsmasq2 och fallback dnsmasq)
   if should_include "oisd"; then
     printf "%s\toisd2\n" "https://small.oisd.nl/dnsmasq2" >> "$list_file"
     printf "%s\toisd\n"  "https://small.oisd.nl/dnsmasq"  >> "$list_file"
   fi
-
   # 2) StevenBlack (hosts-format)
   if should_include "stevenblack"; then
     printf "%s\tstevenblack\n" "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" >> "$list_file"
   fi
-
   # 3) 1Hosts Lite (hosts-format)
   if should_include "1hosts-lite"; then
-    printf "%s\t1hosts-lite\n" "https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts" >> "$list_file"
+    printf "%s\t1hosts-lite\n" "https://badmojr.github.io/1Hosts/Lite/dnsmasq.conf" >> "$list_file"
   fi
-
-  # 4) AdGuard DNS filter (ren domänlista – konverteras)
+  # 4) AdGuard DNS filter (ren domänlista)
   if should_include "adguard"; then
     printf "%s\tadguard\n" "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" >> "$list_file"
   fi
-
   # 5) Valfria extra källor via miljövariabel
   if [ -n "$ADBLOCK_EXTRA_URLS" ]; then
     for u in $ADBLOCK_EXTRA_URLS; do
@@ -466,27 +610,22 @@ build_adblock_sources() {
   fi
 }
 
-# Validera dnsmasq-konfiguration med aktuell binär
 dnsmasq_test_conf() {
   local file="$1"
   local DQSM="/usr/sbin/dnsmasq"
   "$DQSM" --test --conf-file="$file" >/dev/null 2>&1
 }
 
-# Generera en minimal wrapper-konfig så att dnsmasq kan testa endast reglerna.
 wrap_as_conf() {
   local rules="$1" out="$2"
-  # dnsmasq accepterar address=/d/0.0.0.0 direkt, men --conf-file på en ren lista funkar också.
-  # Vi skriver endast reglerna (inga options), för att undvika krock med systemets huvudkonfig.
   cp "$rules" "$out"
 }
 
-# Kombinera, whitelista, deduplicera och aktivera
 update_adblock_dnsmasq() {
   ensure_dnsmasq_dirs
-  local tmp_rules="$WORK/adblock.rules"      # endast dnsmasq address=/.../0.0.0.0
+  local tmp_rules="$WORK/adblock.rules"
   local tmp_rules2="$WORK/adblock.rules2"
-  local tmp_conf="$WORK/adblock.conf.test"   # fil att testköra
+  local tmp_conf="$WORK/adblock.conf.test"
   : > "$tmp_rules"
 
   local DQSM="/usr/sbin/dnsmasq"
@@ -503,17 +642,12 @@ update_adblock_dnsmasq() {
     [ -n "$url" ] || continue
     local f="$WORK/src.$tag.$RANDOM"
     echo "[adblock] Hämtar ($tag): $url"
-    if ! curl -fsSL --retry 3 --retry-delay 5 --max-time "$ADBLOCK_FETCH_TIMEOUT" "$url" -o "$f"; then
+    if ! curl -fsSL --retry 3 --retry-delay 5 --max-time "$CDN_FETCH_TIMEOUT" "$url" -o "$f"; then
       echo "[adblock] VARNING: misslyckades att hämta ($tag): $url"
       continue
     fi
-
-    # Vissa listor (som AdGuard) är inte ren domän/hosts utan har regler/kommentarer.
-    # Vi konverterar allt till dnsmasq-address-regler.
     local conv="$WORK/conv.$tag.$RANDOM"
     to_dnsmasq_rules "$f" "$conv"
-
-    # Append till samlade regler
     cat "$conv" >> "$tmp_rules"
     got_any=1
   done < "$srcs"
@@ -523,16 +657,12 @@ update_adblock_dnsmasq() {
     return 2
   fi
 
-  # Rensa, normalisera, deduplicera
   sed -i -e 's/\r$//' -e 's/[[:space:]]\+$//' "$tmp_rules"
-  # Endast giltiga dnsmasq-addressrader
   grep -E '^address=/[A-Za-z0-9.-]+/0\.0\.0\.0$' "$tmp_rules" | sort -u > "$tmp_rules2" || true
   mv "$tmp_rules2" "$tmp_rules"
 
-  # Applicera whitelist
   apply_adblock_whitelist "$tmp_rules"
 
-  # Om vi inte har några regler efter whitelist, avbryt säkert
   local domains_count
   domains_count=$(wc -l < "$tmp_rules" 2>/dev/null | tr -d ' ' || echo 0)
   if [ "${domains_count}" -eq 0 ]; then
@@ -540,11 +670,9 @@ update_adblock_dnsmasq() {
     return 3
   fi
 
-  # Testa som conf
   wrap_as_conf "$tmp_rules" "$tmp_conf"
   if ! dnsmasq_test_conf "$tmp_conf"; then
     echo "[adblock] VARNING: Validering misslyckades. Försöker med enbart OISD-fallback..."
-    # Minimal fallback till OISD dnsmasq (om med i listan)
     local oisd_fallback="$WORK/oisd.fb"
     if fetch "https://small.oisd.nl/dnsmasq" "$oisd_fallback"; then
       to_dnsmasq_rules "$oisd_fallback" "$tmp_rules"
@@ -560,7 +688,6 @@ update_adblock_dnsmasq() {
     fi
   fi
 
-  # Atomiskt byte till /etc/dnsmasq.d och restart
   as_root mv "$tmp_conf" "$ADBLOCK_CONF"
   if as_root /etc/init.d/dnsmasq restart; then
     echo "[adblock] Aktiverad via $ADBLOCK_CONF (domäner=${domains_count})"
@@ -568,11 +695,9 @@ update_adblock_dnsmasq() {
     echo "[adblock] VARNING: dnsmasq restart misslyckades – kontrollera loggar"; return 6
   fi
 
-  # Räkna blockeringar senaste 24h (om log-queries är aktivt)
   local blocked_24h
   blocked_24h=$(count_adblock_events)
 
-  # Skriv loggrader
   {
     echo "=== $(date -u +'%Y-%m-%d %H:%M:%SZ') ==="
     echo "multi_source=1"
@@ -581,7 +706,6 @@ update_adblock_dnsmasq() {
     echo "conf_path=${ADBLOCK_CONF}"
     echo
   } >> "$ADBLOCK_LOG"
-  # Kompakt rad även i STATE_LOG
   echo "[adblock] multi=1 domains=${domains_count} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
 }
 
@@ -597,11 +721,9 @@ adblock_stats() {
       | tr -d ' ' || true)
   fi
   blocked_24h=$(count_adblock_events)
-  # Utskrift till stdout
   echo "[adblock-stats] conf_path=${conf}"
   echo "[adblock-stats] domains_in_conf=${domains_conf}"
   echo "[adblock-stats] blocked_replies_24h=${blocked_24h}"
-  # Logga till adblock.log
   {
     echo "=== $(date -u +'%Y-%m-%d %H:%M:%SZ') ==="
     echo "stats_only=1"
@@ -610,7 +732,6 @@ adblock_stats() {
     echo "conf_path=${conf}"
     echo
   } >> "$ADBLOCK_LOG"
-  # Kort rad till runs.log
   echo "[adblock-stats] domains=${domains_conf} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
 }
 
