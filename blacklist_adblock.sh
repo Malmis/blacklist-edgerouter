@@ -333,29 +333,32 @@ log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
 # Faller automatiskt tillbaka till OISD 'dnsmasq' (äldre syntax) om testet inte passerar.
 # Se: OISD dnsmasq/dnsmasq2 och oznu-guide för EdgeRouter.  # refs
 
-ensure_dnsmasq_dirs() {
-  [ -d "/etc/dnsmasq.d" ] || mkdir -p "/etc/dnsmasq.d"
-}
-
 update_adblock_dnsmasq() {
   ensure_dnsmasq_dirs
   local tmp="/tmp/adblock.$$"
   local primary_url="${ADBLOCK_URL:-https://small.oisd.nl/dnsmasq2}"  # ny syntax (kräver >=2.86)
   local fallback_url="https://small.oisd.nl/dnsmasq"                  # äldre syntax (passar 2.85)
 
+  # Absolut sökväg till dnsmasq eftersom vbash saknar /usr/sbin i PATH
+  local DQSM="/usr/sbin/dnsmasq"
+  if [ ! -x "$DQSM" ]; then
+    echo "[adblock] FEL: $DQSM saknas eller är ej körbar. Installera/aktivera dnsmasq först."
+    return 9
+  fi
+
   echo "[adblock] Hämtar lista från: $primary_url"
   if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$primary_url" -o "$tmp"; then
     echo "[adblock] VARNING: Nedladdning misslyckades (dnsmasq2)."; return 1
   fi
 
-  # Testa den nedladdade filen
-  if ! dnsmasq --test --conf-file="$tmp" >/dev/null 2>&1; then
-    echo "[adblock] Validering misslyckades för dnsmasq2 (du kör $(dnsmasq -v | head -n1)). Försöker fallback..."
+  # Testa den nedladdade filen med absolut sökväg
+  if ! "$DQSM" --test --conf-file="$tmp" >/dev/null 2>&1; then
+    echo "[adblock] Validering misslyckades för dnsmasq2 ($( "$DQSM" -v | head -n1 )). Försöker fallback..."
     # Fallback: hämta OISD 'dnsmasq' (äldre syntax) och testa igen
     if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$fallback_url" -o "$tmp"; then
       echo "[adblock] VARNING: Fallback-nedladdning misslyckades."; rm -f "$tmp"; return 2
     fi
-    if ! dnsmasq --test --conf-file="$tmp" >/dev/null 2>&1; then
+    if ! "$DQSM" --test --conf-file="$tmp" >/dev/null 2>&1; then
       echo "[adblock] FEL: Validering misslyckades även med fallback. Aktiverar inte."
       rm -f "$tmp"; return 2
     fi
