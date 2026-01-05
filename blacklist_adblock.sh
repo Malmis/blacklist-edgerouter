@@ -2,7 +2,7 @@
 #!/bin/vbash
 # EdgeRouter Blacklist (CIDR → network-group) – diff-uppdatering i två faser + dry-run + sammanfattning + historik
 # Uppdaterar firewall network-group: blacklist_net
-# Kör UTAN sudo.
+# Kör UTAN sudo (scriptet hanterar sudo vid behov för /etc/dnsmasq.d).
 set -Eeuo pipefail
 
 # Slå av eventuella interaktiva alias så $CFG save inte frågar "mv: overwrite ...?"
@@ -17,9 +17,9 @@ TMP_BASE="/tmp/blacklist_cidr"
 MAX_NETS=0 # 0 = ingen begränsning; sätt t.ex. 5000
 
 # ---- Dry-run & state/historik ----
-DRY_RUN="${DRY_RUN:-0}"          # 1 = dry-run (ingen commit)
+DRY_RUN="${DRY_RUN:-0}"             # 1 = dry-run (ingen commit)
 DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}"  # antal rader att visa i listor
-KEEP_WORK="${KEEP_WORK:-0}"      # 1 = behåll tempkatalogen
+KEEP_WORK="${KEEP_WORK:-0}"         # 1 = behåll tempkatalogen
 
 STATE_DIR="/config/scripts/.blacklist_state"
 STATE_TSV="${STATE_DIR}/summary.tsv" # maskinläsbar historik (TSV)
@@ -28,6 +28,12 @@ MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt
 
 # ---[ AD-BLOCK toggles ]---
 ADBLOCK=${ADBLOCK:-1}  # sätt till 1 för att köra adblock automatiskt, eller använd --adblock
+
+log() { logger -t "$LOG_TAG" -- "$*"; printf '[%s] %s\n' "$LOG_TAG" "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+as_root() {  # kör kommandot som root (sudo) om EUID != 0
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then sudo "$@"; else "$@"; fi
+}
 
 # CLI-flagga
 if [[ "${1-}" == "--dry-run" ]]; then DRY_RUN=1; fi
@@ -43,9 +49,6 @@ WHITELIST_CIDR=(
   "8.8.4.4/32" "8.8.8.8/32"
   "9.9.9.9/32"
 )
-
-log() { logger -t "$LOG_TAG" -- "$*"; printf '[%s] %s\n' "$LOG_TAG" "$*"; }
-have() { command -v "$1" >/dev/null 2>&1; }
 
 umask 022
 mkdir -p "$TMP_BASE" "$STATE_DIR"
@@ -331,10 +334,11 @@ log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
 # Körs endast på begäran (flaggan --adblock eller ADBLOCK=1).
 # Standardkälla: OISD small i dnsmasq2-format (dnsmasq ≥ 2.86).
 # Faller automatiskt tillbaka till OISD 'dnsmasq' (äldre syntax) om testet inte passerar.
-# Se: OISD dnsmasq/dnsmasq2 och oznu-guide för EdgeRouter.  # refs
+# Se: OISD dnsmasq/dnsmasq2 (dnsmasq2 kräver ≥2.86) och etablerat EdgeRouter-upplägg.  # refs
 
 ensure_dnsmasq_dirs() {
-  [ -d "/etc/dnsmasq.d" ] || mkdir -p "/etc/dnsmasq.d"
+  # Skapa /etc/dnsmasq.d som root om den saknas
+  as_root mkdir -p "/etc/dnsmasq.d"
 }
 
 update_adblock_dnsmasq() {
@@ -369,9 +373,9 @@ update_adblock_dnsmasq() {
     echo "[adblock] Fallback giltig – använder 'dnsmasq' format (kompatibelt med 2.85)."
   fi
 
-  # Atomiskt byte och restart
-  mv "$tmp" "/etc/dnsmasq.d/adblock.conf"
-  if /etc/init.d/dnsmasq restart; then
+  # Atomiskt byte till /etc/dnsmasq.d som root och restart
+  as_root mv "$tmp" "/etc/dnsmasq.d/adblock.conf"
+  if as_root /etc/init.d/dnsmasq restart; then
     echo "[adblock] Aktiverad via /etc/dnsmasq.d/adblock.conf"
   else
     echo "[adblock] VARNING: dnsmasq restart misslyckades – kontrollera loggar"; return 3
