@@ -239,8 +239,8 @@ commit; save; exit
 
 unexpected member not found […] vid commit
 
-*** Kör repair-blacklist.sh
-*** Kör blacklist.sh igen.
+ Kör repair-blacklist.sh
+* * Kör blacklist.sh igen.
 
 * **validateSetPath() without config session / sessionsfel**
 
@@ -248,19 +248,19 @@ Kommer av config‑kommandon utanför giltig session. Dessa skript använder end
 
 * Inspektera tempdata
 
-Kör med KEEP_WORK=1 och titta i /tmp/blacklist_cidr.*:
+Kör med `KEEP_WORK=1` och titta i `/tmp/blacklist_cidr.*`:
 
-** to_del.txt — vilka medlemmar tas bort
-** to_add.txt — vilka läggs till
-** current_cidr.txt — vad som fanns före
-** final_cidr.norm — önskat efter filtrering
+* **to_del.txt** — vilka medlemmar tas bort
+* **to_add.txt** — vilka läggs till
+* **current_cidr.txt** — vad som fanns före
+* **final_cidr.norm** — önskat efter filtrering
 
 ## Design‑noteringar
 
 * **Exakt strängmatchning** (grep -F -x) för att undvika regex‑fallgropar med CIDR‑punkter.
 * **Tvåstegs commit** (DEL → ADD) för att undvika EdgeOS diff‑quirks när operationer blandas.
 * Ingen script-template för config‑steg; **wrapper‑binärer** är robustare från vbash.
-* Källor: FireHOL‑listor (DShield/Level1):
-** https://iplists.firehol.org/files/dshield.netset
-** https://iplists.firehol.org/files/firehol_level1.netset
+* **Källor:** FireHOL-listor (DShield/Level1):
+  * https://iplists.firehol.org/files/dshield.netset
+  * https://iplists.firehol.org/files/firehol_level1.netset
 Säkerhetstips: Whitelista dina administrativa IP‑områden (jump hosts, monitorering etc.) för att undvika oavsiktliga avstängningar.
