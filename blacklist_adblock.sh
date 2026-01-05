@@ -27,7 +27,7 @@ STATE_LOG="${STATE_DIR}/runs.log"    # lättläst logg per körning
 MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt)
 
 # ---[ AD-BLOCK toggles & paths ]---
-ADBLOCK=${ADBLOCK:-1}  # sätt 1 för att köra adblock varje gång (du har redan detta)
+ADBLOCK=${ADBLOCK:-1}  # kör adblock varje gång
 ADBLOCK_URL="${ADBLOCK_URL:-}"       # kan överskrivas vid körning
 ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt"  # en domän per rad
 ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
@@ -117,11 +117,10 @@ tr -d '\r' < "$ALL_CIDR" \
   | filter_reserved_cidr \
   | sort -u > "$FILTERED"
 
-# Whitelist
-WHITELIST_CIDR_FILE_READY=0
-if [[ -f "$WORK/whitelist_cidr.txt" ]]; then :; fi
-if [[ -f "$WORK/whitelist_cidr.txt" ]]; then WHITELIST_CIDR_FILE_READY=1; fi
-if [[ "${#WHITELIST_CIDR[@]}" -gt 0 ]]; then
+# ======= Whitelist för CIDR (array är valfri) =======
+# Undvik "unbound variable" med set -u: initiera tom array om den saknas.
+if [ -z "${WHITELIST_CIDR+x}" ]; then WHITELIST_CIDR=(); fi
+if ((${#WHITELIST_CIDR[@]} > 0)); then
   WL="$WORK/whitelist_cidr.txt"
   printf "%s\n" "${WHITELIST_CIDR[@]}" \
     | tr -d '\r' \
@@ -326,7 +325,6 @@ log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
 
 # -----------------------------------------------------------------------------
 # ---[ AD-BLOCK (dnsmasq) – valfritt tillägg, logg + whitelist + stats ]-------
-# Körs endast på begäran (flaggan --adblock eller ADBLOCK=1).
 # Primärkälla: OISD 'dnsmasq2' (kräver dnsmasq ≥ 2.86); fallback till 'dnsmasq' (passar 2.85).
 
 ensure_dnsmasq_dirs() {
@@ -337,10 +335,8 @@ ensure_dnsmasq_dirs() {
 # Räkna blockeringar (kräver log-queries). Heuristik: räkna "reply ... is 0.0.0.0" senaste 24h.
 count_adblock_events() {
   local logf="/var/log/messages"
-  local since_sec=$(( $(date +%s) - 24*3600 ))
   local count=0
   if [ -f "$logf" ]; then
-    # Läs sista ~20000 rader för prestanda; filtrera dnsmasq-reply 0.0.0.0 och grovt på tidsstämpel (dagens datum räcker oftast).
     local today="$(date '+%b %e')" # ex "Jan  5"
     count=$(tail -n 20000 "$logf" | grep -F "$today" | grep -E 'dnsmasq' | grep -E 'reply .* is 0\.0\.0\.0' | wc -l || true)
   fi
@@ -359,9 +355,7 @@ apply_adblock_whitelist() {
   [ -s "$wl" ] || return 0
 
   # Ta bort rader som matchar /domain/ eller /*.domain/ (subdomäner). OISD använder address=/domain/0.0.0.0 etc.
-  # Kör en sed-loop för varje domän för enkelhet och kompatibilitet.
   while IFS= read -r d; do
-    # Exakt /domain/ och /sub.domain/
     sed -i -E "/\/([^.\/]*\.)*${d//./\\.}\//d" "$file"
   done < "$wl"
 }
@@ -379,7 +373,6 @@ update_adblock_dnsmasq() {
     return 9
   fi
 
-  # Hämta och testa primär (dnsmasq2)
   echo "[adblock] Hämtar lista från: $primary_url"
   if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$primary_url" -o "$tmp"; then
     echo "[adblock] VARNING: Nedladdning misslyckades (dnsmasq2)."; return 1
@@ -388,7 +381,7 @@ update_adblock_dnsmasq() {
   # Whitelist (om finns)
   apply_adblock_whitelist "$tmp"
 
-  # Räkna domäner (rader som börjar med address= eller server= etc., ignorerar kommentarer/tomma)
+  # Räkna domäner efter whitelist
   local domains_count
   domains_count=$(grep -E '^(address=|server=|local=|domain=)' "$tmp" | grep -vE '^\s*#' | wc -l | tr -d ' ')
 
