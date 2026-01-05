@@ -28,10 +28,17 @@ MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt
 
 # ---[ AD-BLOCK toggles & paths ]---
 ADBLOCK=${ADBLOCK:-1}  # kör adblock varje gång
+ADBLOCK-STATS=${ADBLOCK-STATS:-1} # adblock stats varje gång
 ADBLOCK_URL="${ADBLOCK_URL:-}"       # kan överskrivas vid körning
 ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt"  # en domän per rad
 ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
 ADBLOCK_LOG="${STATE_DIR}/adblock.log"
+
+# ---[ STATS-flagga ]---
+DO_ADBLOCK_STATS=0
+if [ "${1:-}" = "--adblock-stats" ] || [ "${2:-}" = "--adblock-stats" ]; then
+  DO_ADBLOCK_STATS=1
+fi
 
 log() { logger -t "$LOG_TAG" -- "$*"; printf '[%s] %s\n' "$LOG_TAG" "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -428,9 +435,45 @@ update_adblock_dnsmasq() {
   echo "[adblock] source=${source_used} domains=${domains_count} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
 }
 
+# ----[ STATS: summera aktiv adblock.conf utan att hämta ny lista ]----
+adblock_stats() {
+  local conf="$ADBLOCK_CONF"
+  local DQSM="/usr/sbin/dnsmasq"
+  local domains_conf=0
+  local blocked_24h=0
+
+  if [ -f "$conf" ]; then
+    domains_conf=$(grep -E '^(address=|server=|local=|domain=)' "$conf" | grep -vE '^\s*#' | wc -l | tr -d ' ')
+  fi
+  blocked_24h=$(count_adblock_events)
+
+  # Utskrift till stdout
+  echo "[adblock-stats] conf_path=${conf}"
+  echo "[adblock-stats] domains_in_conf=${domains_conf}"
+  echo "[adblock-stats] blocked_replies_24h=${blocked_24h}"
+
+  # Logga till adblock.log
+  {
+    echo "=== $(date -u +"%Y-%m-%d %H:%M:%SZ") ==="
+    echo "stats_only=1"
+    echo "domains_in_conf=${domains_conf}"
+    echo "blocked_replies_24h=${blocked_24h}"
+    echo "conf_path=${conf}"
+    echo
+  } >> "$ADBLOCK_LOG"
+
+  # Kort rad till runs.log
+  echo "[adblock-stats] domains=${domains_conf} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
+}
+
 # Flagga/trigger: --adblock (i första eller andra argumentet) eller ADBLOCK=1
 if [ "${ADBLOCK:-0}" = "1" ] || [ "${1:-}" = "--adblock" ] || [ "${2:-}" = "--adblock" ]; then
   update_adblock_dnsmasq
+fi
+
+# Kör stats om flaggan är satt (oavsett om adblock uppdaterades eller ej)
+if [ "$DO_ADBLOCK_STATS" -eq 1 ]; then
+  adblock_stats
 fi
 
 exit 0
