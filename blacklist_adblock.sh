@@ -27,15 +27,14 @@ STATE_LOG="${STATE_DIR}/runs.log"    # lättläst logg per körning
 MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt)
 
 # ---[ AD-BLOCK toggles & paths ]---
-ADBLOCK=${ADBLOCK:-1}  # kör adblock varje gång
-ADBLOCK-STATS=${ADBLOCK-STATS:-1} # adblock stats varje gång
+ADBLOCK=${ADBLOCK:-1}  # kör adblock varje körning
+DO_ADBLOCK_STATS=1 # adblock stats varje körning
 ADBLOCK_URL="${ADBLOCK_URL:-}"       # kan överskrivas vid körning
 ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt"  # en domän per rad
 ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
 ADBLOCK_LOG="${STATE_DIR}/adblock.log"
 
 # ---[ STATS-flagga ]---
-DO_ADBLOCK_STATS=0
 if [ "${1:-}" = "--adblock-stats" ] || [ "${2:-}" = "--adblock-stats" ]; then
   DO_ADBLOCK_STATS=1
 fi
