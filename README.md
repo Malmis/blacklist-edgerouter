@@ -241,3 +241,42 @@ ls -la /tmp/blacklist_cidr.*
 * **Källor:** FireHOL-listor ([DShield](https://iplists.firehol.org/files/dshield.netset) / [Level 1](https://iplists.firehol.org/files/firehol_level1.netset)).
 
 > **Säkerhetstips:** Whitelista alltid dina administrativa IP‑områden (jump hosts, monitorering etc.) för att undvika oavsiktliga avstängningar.
+
+
+## Whitelist-exempel för Adblock
+
+För att undanta vissa domäner från blockering:
+
+1. Skapa whitelist-fil (om den inte finns):
+```bash
+sudo mkdir -p /config/blacklist
+sudo touch /config/blacklist/adblock-whitelist.txt
+```
+
+2. Lägg till domäner i whitelist:
+- Exakt domän: `example.com`
+- Alla underdomäner: `.example.com`
+
+Exempel:
+```bash
+echo "example.com" >> /config/blacklist/adblock-whitelist.txt
+echo ".sub.example.net" >> /config/blacklist/adblock-whitelist.txt
+echo "cdn.example.org" >> /config/blacklist/adblock-whitelist.txt
+```
+
+3. Kör skriptet:
+```bash
+sudo vbash /config/scripts/blacklist_adblock.sh
+```
+
+Skriptet kommer att:
+- Hämta OISD-listan.
+- Ta bort alla domäner som matchar whitelist.
+- Aktivera adblock.
+- Logga antal domäner efter whitelist och blockeringar senaste 24h.
+
+**Kontrollera loggar:**
+```bash
+tail -n 50 /config/scripts/.blacklist_state/adblock.log
+tail -n 50 /config/scripts/.blacklist_state/runs.log
+```
