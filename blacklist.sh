@@ -1,4 +1,3 @@
-
 #!/bin/vbash
 # EdgeRouter Blacklist (CIDR → network-group) – diff-uppdatering i två faser + dry-run + sammanfattning + historik
 # Uppdaterar firewall network-group: blacklist_net
@@ -17,31 +16,38 @@ TMP_BASE="/tmp/blacklist_cidr"
 MAX_NETS=0 # 0 = ingen begränsning; sätt t.ex. 5000
 
 # ---- Dry-run & state/historik ----
-DRY_RUN="${DRY_RUN:-0}"             # 1 = dry-run (ingen commit)
-DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}"  # antal rader att visa i listor
-KEEP_WORK="${KEEP_WORK:-0}"         # 1 = behåll tempkatalogen
-
+DRY_RUN="${DRY_RUN:-0}"           # 1 = dry-run (ingen commit)
+DRY_RUN_SHOW="${DRY_RUN_SHOW:-20}" # antal rader att visa i listor
+KEEP_WORK="${KEEP_WORK:-0}"       # 1 = behåll tempkatalogen
 STATE_DIR="/config/scripts/.blacklist_state"
-STATE_TSV="${STATE_DIR}/summary.tsv" # maskinläsbar historik (TSV)
-STATE_LOG="${STATE_DIR}/runs.log"    # lättläst logg per körning
-MAX_HISTORY="${MAX_HISTORY:-500}"    # max antal historikrader (0 = behåll allt)
+STATE_TSV="${STATE_DIR}/summary.tsv"   # maskinläsbar historik (TSV)
+STATE_LOG="${STATE_DIR}/runs.log"      # lättläst logg per körning
+MAX_HISTORY="${MAX_HISTORY:-500}"      # max antal historikrader (0 = behåll allt)
 
 # ---[ AD-BLOCK toggles & paths ]---
-ADBLOCK=${ADBLOCK:-1}  # kör adblock varje körning
-DO_ADBLOCK_STATS=1 # adblock stats varje körning
-ADBLOCK_URL="${ADBLOCK_URL:-}"       # kan överskrivas vid körning
-ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt"  # en domän per rad
+ADBLOCK=${ADBLOCK:-1} # kör adblock varje körning
+DO_ADBLOCK_STATS=1    # adblock stats varje körning
+ADBLOCK_URL="${ADBLOCK_URL:-}"  # kan överskrivas vid körning (primär källa)
+ADBLOCK_WHITELIST="/config/blacklist/adblock-whitelist.txt" # en domän per rad
 ADBLOCK_CONF="/etc/dnsmasq.d/adblock.conf"
 ADBLOCK_LOG="${STATE_DIR}/adblock.log"
 
-# ---[ STATS-flagga ]---
+# Extra konfig för flera källor:
+# Mellanslagsseparerad lista av ytterligare källor (valfritt)
+ADBLOCK_EXTRA_URLS="${ADBLOCK_EXTRA_URLS:-}"
+# Uteslut inbyggda källor genom att namnge dem här (t.ex. "oisd stevenblack")
+ADBLOCK_EXCLUDE_SOURCES="${ADBLOCK_EXCLUDE_SOURCES:-}"
+# Max tid (sekunder) per nedladdning
+ADBLOCK_FETCH_TIMEOUT="${ADBLOCK_FETCH_TIMEOUT:-240}"
+
+# --[ STATS-flagga ]--
 if [ "${1:-}" = "--adblock-stats" ] || [ "${2:-}" = "--adblock-stats" ]; then
   DO_ADBLOCK_STATS=1
 fi
 
 log() { logger -t "$LOG_TAG" -- "$*"; printf '[%s] %s\n' "$LOG_TAG" "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
-as_root() {  # kör kommandot som root (sudo) om EUID != 0
+as_root() { # kör kommandot som root (sudo) om EUID != 0
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then sudo "$@"; else "$@"; fi
 }
 
@@ -69,8 +75,8 @@ done
 
 fetch() {
   local url="$1" out="$2"
-  if have curl; then curl -fsSL --connect-timeout 15 --max-time 120 -o "$out" "$url"
-  elif have wget; then wget -q -T 120 -O "$out" "$url"
+  if have curl; then curl -fsSL --connect-timeout 15 --max-time "$ADBLOCK_FETCH_TIMEOUT" -o "$out" "$url"
+  elif have wget; then wget -q -T "$ADBLOCK_FETCH_TIMEOUT" -O "$out" "$url"
   else log "FEL: varken curl eller wget finns"; exit 1; fi
 }
 
@@ -80,7 +86,9 @@ ALL_CIDR="$WORK/all_cidr.txt"; : > "$ALL_CIDR"
 i=0
 for url in \
   "https://iplists.firehol.org/files/dshield.netset" \
-  "https://iplists.firehol.org/files/firehol_level1.netset"
+  "https://iplists.firehol.org/files/firehol_level1.netset" \
+  "https://iplists.firehol.org/files/firehol_level2.netset" \
+  "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt"
 do
   f="$WORK/list_$((++i)).raw"
   if fetch "$url" "$f"; then log "OK: $url"; else log "FEL: kunde inte hämta $url"; continue; fi
@@ -96,14 +104,13 @@ validate_cidr() {
     if(!valid_oct(o[1])||!valid_oct(o[2])||!valid_oct(o[3])||!valid_oct(o[4])) next;
     if(!valid_pfx(p)) next; print ip"/"p }'
 }
-
 filter_reserved_cidr() {
   awk '
   function ip_to_num(ip){ split(ip,o,"."); return (o[1]*256*256*256)+(o[2]*256*256)+(o[3]*256)+o[4] }
   function in_range(h,s,e){ return (ip_to_num(h)>=ip_to_num(s)&&ip_to_num(h)<=ip_to_num(e)) }
   { split($0,a,"/"); ip=a[1];
-    if (in_range(ip,"0.0.0.0","0.255.255.255"))    next
-    if (in_range(ip,"10.0.0.0","10.255.255.255"))  next
+    if (in_range(ip,"0.0.0.0","0.255.255.255")) next
+    if (in_range(ip,"10.0.0.0","10.255.255.255")) next
     if (in_range(ip,"100.64.0.0","100.127.255.255")) next
     if (in_range(ip,"127.0.0.0","127.255.255.255")) next
     if (in_range(ip,"169.254.0.0","169.254.255.255")) next
@@ -126,7 +133,7 @@ tr -d '\r' < "$ALL_CIDR" \
 # ======= Whitelist för CIDR (array är valfri) =======
 # Undvik "unbound variable" med set -u: initiera tom array om den saknas.
 if [ -z "${WHITELIST_CIDR+x}" ]; then WHITELIST_CIDR=(); fi
-if ((${#WHITELIST_CIDR[@]} > 0)); then
+if (( ${#WHITELIST_CIDR[@]} > 0 )); then
   WL="$WORK/whitelist_cidr.txt"
   printf "%s\n" "${WHITELIST_CIDR[@]}" \
     | tr -d '\r' \
@@ -144,7 +151,6 @@ if (( MAX_NETS > 0 && COUNT > MAX_NETS )); then
 else
   cp "$FILTERED" "$WORK/final_cidr.txt"
 fi
-
 FINAL="$WORK/final_cidr.txt"
 tr -d '\r' < "$FINAL" \
   | sed 's/[[:space:]]\+$//' \
@@ -178,7 +184,6 @@ sed -E "s/^set firewall group network-group ${GROUP_NET} network //" "$CUR_SET" 
 
 TO_ADD="$WORK/to_add.txt"; TO_DEL="$WORK/to_del.txt"
 : > "$TO_ADD"; : > "$TO_DEL"
-
 if [[ -s "$FINAL" && -s "$CUR_CIDR" ]]; then
   grep -F -x -v -f "$CUR_CIDR" "$FINAL" | sort -u > "$TO_ADD" || true
   grep -F -x -v -f "$FINAL" "$CUR_CIDR" | sort -u > "$TO_DEL" || true
@@ -212,7 +217,6 @@ summary_block() {
     echo "Ingen tidigare körning registrerad."
   fi
 }
-
 append_history() {
   # 1) TSV (maskinläsbar historik) – append
   printf "%s\t%d\t%d\t%d\t%d\t%d\n" "${NOW_TS}" \
@@ -272,7 +276,6 @@ if [[ "$DELN" -gt 0 ]]; then
       echo "[blacklist] Skippar delete, medlem saknas: ${cidr}" >&2
     fi
   done < "$TO_DEL"
-
   echo "[blacklist] Kommittar borttagningar (DELs=${DELN}) ..."
   if ! $CFG commit; then
     echo "[blacklist] DEL-commit misslyckades – kör /config/scripts/repair-blacklist.sh och kör sedan detta skript igen."
@@ -293,7 +296,6 @@ if [[ "$ADDN" -gt 0 ]]; then
     $CFG set firewall group network-group "${GROUP_NET}" network "${cidr}"
   done < "$TO_ADD"
 fi
-
 echo "[blacklist] Kommittar uppdatering av '${GROUP_NET}' (ADDs=${ADDN}, DELs=${DELN}) ..."
 $CFG commit
 $CFG save
@@ -329,9 +331,9 @@ NEW_CUR_PRED="${POST_COUNT}"
 append_history
 log "Klart: '${GROUP_NET}' uppdaterad (ADDs=${ADDN}, DELs=${DELN})."
 
-# -----------------------------------------------------------------------------
-# ---[ AD-BLOCK (dnsmasq) – valfritt tillägg, logg + whitelist + stats ]-------
-# Primärkälla: OISD 'dnsmasq2' (kräver dnsmasq ≥ 2.86); fallback till 'dnsmasq' (passar 2.85).
+# ---------------------------------------------------------------------------
+# ---[ AD-BLOCK (dnsmasq) – utökad: flera källor, whitelist, validering ]---
+# ---------------------------------------------------------------------------
 
 ensure_dnsmasq_dirs() {
   # Skapa /etc/dnsmasq.d som root om den saknas
@@ -343,77 +345,227 @@ count_adblock_events() {
   local logf="/var/log/messages"
   local count=0
   if [ -f "$logf" ]; then
-    local today="$(date '+%b %e')" # ex "Jan  5"
-    count=$(tail -n 20000 "$logf" | grep -F "$today" | grep -E 'dnsmasq' | grep -E 'reply .* is 0\.0\.0\.0' | wc -l || true)
+    local today="$(date '+%b %e')" # ex "Jan  5" (obs två mellanslag för ensiffrig dag)
+    count=$(tail -n 20000 "$logf" \
+      | grep -F "$today" \
+      | grep -E 'dnsmasq' \
+      | grep -E 'reply .* is 0\.0\.0\.0' \
+      | wc -l \
+      | tr -d ' ' || true)
   fi
   echo "${count}"
 }
 
-# Applicera whitelist på OISD-dnsmasq-fil i $1 -> skriv tillbaka till samma
-apply_adblock_whitelist() {
-  local file="$1"
-  [ -f "$ADBLOCK_WHITELIST" ] || return 0
-  # Normalisera whitelist: ta bort tomrader/kommentarer, trimma punkt-prefix.
-  local wl="$WORK/adblock-wl.norm"
-  sed -e 's/#.*$//' -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//' "$ADBLOCK_WHITELIST" \
-    | awk 'length' \
-    | sed -e 's/^\.\(.*\)$/\1/' > "$wl"
-  [ -s "$wl" ] || return 0
-
-  # Ta bort rader som matchar /domain/ eller /*.domain/ (subdomäner). OISD använder address=/domain/0.0.0.0 etc.
-  while IFS= read -r d; do
-    sed -i -E "/\/([^.\/]*\.)*${d//./\\.}\//d" "$file"
-  done < "$wl"
+# Normalisera whitelist till enkel domänlista (utan punkt-prefix och kommentarer)
+normalize_whitelist() {
+  local out="$1"
+  : > "$out"
+  if [ -f "$ADBLOCK_WHITELIST" ]; then
+    sed -e 's/\#.*$//' -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//' "$ADBLOCK_WHITELIST" \
+      | awk 'length' \
+      | sed -e 's/^\.\(.*\)$/\1/' \
+      | sort -u > "$out"
+  fi
 }
 
+# Upptäck format och konvertera till dnsmasq address=/domain/0.0.0.0
+# Stöd: dnsmasq (address=/d/0.0.0.0), hosts (0.0.0.0 d eller 127.0.0.1 d), ren domänlista
+to_dnsmasq_rules() {
+  local in="$1" out="$2"
+  awk '
+    function is_comment(line){ return (line ~ /^[[:space:]]*(#|;|\/\/)/) }
+    function trim(s){ sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); return s }
+    function add(d){
+      if (d ~ /^[A-Za-z0-9.-]+$/ && d !~ /^(\.|-)/ && d ~ /\./) {
+        print "address=/" d "/0.0.0.0"
+      }
+    }
+    {
+      raw=$0
+      # Behåll dnsmasq-regler direkt
+      if (raw ~ /^[[:space:]]*address=\/[A-Za-z0-9.-]+\/0\.0\.0\.0[[:space:]]*$/) {
+        print trim(raw); next
+      }
+      if (is_comment(raw) || raw ~ /^[[:space:]]*$/) next
+      line=trim(raw)
+      # hosts-format
+      if (line ~ /^(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+/) {
+        sub(/^(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+/,"",line)
+        split(line,a,/[[:space:]]+/)
+        d=a[1]; gsub(/^\.*/,"",d); add(d); next
+      }
+      # ren domän
+      gsub(/^\.*/,"",line); add(line)
+    }
+  ' "$in" > "$out"
+}
+
+# Applicera whitelist: tar bort rader i dnsmasq-regler som matchar domain eller *.domain
+apply_adblock_whitelist() {
+  local file="$1"
+  local wl_norm="$WORK/adblock-wl.norm"
+  normalize_whitelist "$wl_norm"
+  [ -s "$wl_norm" ] || return 0
+
+  # Ta bort både exact och wildcard (subdomäner) för varje whitelistad domän
+  # address=/sub.domain.tld/0.0.0.0 och address=/anything.domain.tld/0.0.0.0
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    # Escapa punkter
+    local d_esc
+    d_esc="$(printf '%s' "$d" | sed 's/\./\\./g')"
+    sed -i -E "/^address=\/(${d_esc}|([^.\/]*\.)*${d_esc})\/0\.0\.0\.0$/d" "$file"
+  done < "$wl_norm"
+}
+
+# Inbyggda källor (kan uteslutas via ADBLOCK_EXCLUDE_SOURCES)
+should_include() {
+  local name="$1"
+  case " $ADBLOCK_EXCLUDE_SOURCES " in
+    *" $name "*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Returnera lista av URL:er att använda (inkl. primär, inbyggda, extra)
+build_adblock_sources() {
+  local list_file="$1"
+  : > "$list_file"
+
+  # 0) Miljö-override: ADBLOCK_URL (primär)
+  if [ -n "$ADBLOCK_URL" ]; then
+    printf "%s\tprimary\n" "$ADBLOCK_URL" >> "$list_file"
+  fi
+
+  # 1) OISD (dnsmasq2 och fallback dnsmasq)
+  if should_include "oisd"; then
+    printf "%s\toisd2\n" "https://small.oisd.nl/dnsmasq2" >> "$list_file"
+    printf "%s\toisd\n"  "https://small.oisd.nl/dnsmasq"  >> "$list_file"
+  fi
+
+  # 2) StevenBlack (hosts-format)
+  if should_include "stevenblack"; then
+    printf "%s\tstevenblack\n" "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" >> "$list_file"
+  fi
+
+  # 3) 1Hosts Lite (hosts-format)
+  if should_include "1hosts-lite"; then
+    printf "%s\t1hosts-lite\n" "https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts" >> "$list_file"
+  fi
+
+  # 4) AdGuard DNS filter (ren domänlista – konverteras)
+  if should_include "adguard"; then
+    printf "%s\tadguard\n" "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" >> "$list_file"
+  fi
+
+  # 5) Valfria extra källor via miljövariabel
+  if [ -n "$ADBLOCK_EXTRA_URLS" ]; then
+    for u in $ADBLOCK_EXTRA_URLS; do
+      printf "%s\textra\n" "$u" >> "$list_file"
+    done
+  fi
+}
+
+# Validera dnsmasq-konfiguration med aktuell binär
+dnsmasq_test_conf() {
+  local file="$1"
+  local DQSM="/usr/sbin/dnsmasq"
+  "$DQSM" --test --conf-file="$file" >/dev/null 2>&1
+}
+
+# Generera en minimal wrapper-konfig så att dnsmasq kan testa endast reglerna.
+wrap_as_conf() {
+  local rules="$1" out="$2"
+  # dnsmasq accepterar address=/d/0.0.0.0 direkt, men --conf-file på en ren lista funkar också.
+  # Vi skriver endast reglerna (inga options), för att undvika krock med systemets huvudkonfig.
+  cp "$rules" "$out"
+}
+
+# Kombinera, whitelista, deduplicera och aktivera
 update_adblock_dnsmasq() {
   ensure_dnsmasq_dirs
-  local tmp="/tmp/adblock.$$"
-  local primary_url="${ADBLOCK_URL:-https://small.oisd.nl/dnsmasq2}"  # ny syntax (kräver >=2.86)
-  local fallback_url="https://small.oisd.nl/dnsmasq"                  # äldre syntax (passar 2.85)
+  local tmp_rules="$WORK/adblock.rules"      # endast dnsmasq address=/.../0.0.0.0
+  local tmp_rules2="$WORK/adblock.rules2"
+  local tmp_conf="$WORK/adblock.conf.test"   # fil att testköra
+  : > "$tmp_rules"
 
-  # Absolut sökväg till dnsmasq eftersom vbash saknar /usr/sbin i PATH
   local DQSM="/usr/sbin/dnsmasq"
   if [ ! -x "$DQSM" ]; then
     echo "[adblock] FEL: $DQSM saknas eller är ej körbar. Installera/aktivera dnsmasq först."
     return 9
   fi
 
-  echo "[adblock] Hämtar lista från: $primary_url"
-  if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$primary_url" -o "$tmp"; then
-    echo "[adblock] VARNING: Nedladdning misslyckades (dnsmasq2)."; return 1
+  local srcs="$WORK/sources.tsv"
+  build_adblock_sources "$srcs"
+
+  local got_any=0
+  while IFS=$'\t' read -r url tag; do
+    [ -n "$url" ] || continue
+    local f="$WORK/src.$tag.$RANDOM"
+    echo "[adblock] Hämtar ($tag): $url"
+    if ! curl -fsSL --retry 3 --retry-delay 5 --max-time "$ADBLOCK_FETCH_TIMEOUT" "$url" -o "$f"; then
+      echo "[adblock] VARNING: misslyckades att hämta ($tag): $url"
+      continue
+    fi
+
+    # Vissa listor (som AdGuard) är inte ren domän/hosts utan har regler/kommentarer.
+    # Vi konverterar allt till dnsmasq-address-regler.
+    local conv="$WORK/conv.$tag.$RANDOM"
+    to_dnsmasq_rules "$f" "$conv"
+
+    # Append till samlade regler
+    cat "$conv" >> "$tmp_rules"
+    got_any=1
+  done < "$srcs"
+
+  if [ "$got_any" -ne 1 ]; then
+    echo "[adblock] FEL: Inga källor kunde hämtas."
+    return 2
   fi
 
-  # Whitelist (om finns)
-  apply_adblock_whitelist "$tmp"
+  # Rensa, normalisera, deduplicera
+  sed -i -e 's/\r$//' -e 's/[[:space:]]\+$//' "$tmp_rules"
+  # Endast giltiga dnsmasq-addressrader
+  grep -E '^address=/[A-Za-z0-9.-]+/0\.0\.0\.0$' "$tmp_rules" | sort -u > "$tmp_rules2" || true
+  mv "$tmp_rules2" "$tmp_rules"
 
-  # Räkna domäner efter whitelist
+  # Applicera whitelist
+  apply_adblock_whitelist "$tmp_rules"
+
+  # Om vi inte har några regler efter whitelist, avbryt säkert
   local domains_count
-  domains_count=$(grep -E '^(address=|server=|local=|domain=)' "$tmp" | grep -vE '^\s*#' | wc -l | tr -d ' ')
+  domains_count=$(wc -l < "$tmp_rules" 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "${domains_count}" -eq 0 ]; then
+    echo "[adblock] VARNING: 0 regler efter whitelist – aktiverar inte."
+    return 3
+  fi
 
-  # Testa filen
-  local source_used="dnsmasq2"
-  if ! "$DQSM" --test --conf-file="$tmp" >/dev/null 2>&1; then
-    echo "[adblock] Validering misslyckades för dnsmasq2 ($("$DQSM" -v | head -n1)). Försöker fallback..."
-    if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 240 "$fallback_url" -o "$tmp"; then
-      echo "[adblock] VARNING: Fallback-nedladdning misslyckades."; rm -f "$tmp"; return 2
+  # Testa som conf
+  wrap_as_conf "$tmp_rules" "$tmp_conf"
+  if ! dnsmasq_test_conf "$tmp_conf"; then
+    echo "[adblock] VARNING: Validering misslyckades. Försöker med enbart OISD-fallback..."
+    # Minimal fallback till OISD dnsmasq (om med i listan)
+    local oisd_fallback="$WORK/oisd.fb"
+    if fetch "https://small.oisd.nl/dnsmasq" "$oisd_fallback"; then
+      to_dnsmasq_rules "$oisd_fallback" "$tmp_rules"
+      apply_adblock_whitelist "$tmp_rules"
+      wrap_as_conf "$tmp_rules" "$tmp_conf"
+      if ! dnsmasq_test_conf "$tmp_conf"; then
+        echo "[adblock] FEL: Validering misslyckades även med OISD-fallback. Avbryter."
+        return 4
+      fi
+    else
+      echo "[adblock] FEL: kunde inte hämta OISD-fallback."
+      return 5
     fi
-    # Whitelist igen på fallback-fil
-    apply_adblock_whitelist "$tmp"
-    domains_count=$(grep -E '^(address=|server=|local=|domain=)' "$tmp" | grep -vE '^\s*#' | wc -l | tr -d ' ')
-    if ! "$DQSM" --test --conf-file="$tmp" >/dev/null 2>&1; then
-      echo "[adblock] FEL: Validering misslyckades även med fallback. Aktiverar inte."
-      rm -f "$tmp"; return 2
-    fi
-    source_used="dnsmasq"
   fi
 
   # Atomiskt byte till /etc/dnsmasq.d och restart
-  as_root mv "$tmp" "$ADBLOCK_CONF"
+  as_root mv "$tmp_conf" "$ADBLOCK_CONF"
   if as_root /etc/init.d/dnsmasq restart; then
-    echo "[adblock] Aktiverad via $ADBLOCK_CONF"
+    echo "[adblock] Aktiverad via $ADBLOCK_CONF (domäner=${domains_count})"
   else
-    echo "[adblock] VARNING: dnsmasq restart misslyckades – kontrollera loggar"; return 3
+    echo "[adblock] VARNING: dnsmasq restart misslyckades – kontrollera loggar"; return 6
   fi
 
   # Räkna blockeringar senaste 24h (om log-queries är aktivt)
@@ -422,45 +574,42 @@ update_adblock_dnsmasq() {
 
   # Skriv loggrader
   {
-    echo "=== $(date -u +"%Y-%m-%d %H:%M:%SZ") ==="
-    echo "source_used=${source_used}"               # dnsmasq2 eller dnsmasq
-    echo "domains_after_whitelist=${domains_count}" # antal rader i conf efter whitelist
-    echo "blocked_replies_24h=${blocked_24h}"       # heuristik från syslog
+    echo "=== $(date -u +'%Y-%m-%d %H:%M:%SZ') ==="
+    echo "multi_source=1"
+    echo "domains_after_whitelist=${domains_count}"
+    echo "blocked_replies_24h=${blocked_24h}"
     echo "conf_path=${ADBLOCK_CONF}"
     echo
   } >> "$ADBLOCK_LOG"
-
   # Kompakt rad även i STATE_LOG
-  echo "[adblock] source=${source_used} domains=${domains_count} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
+  echo "[adblock] multi=1 domains=${domains_count} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
 }
 
-# ----[ STATS: summera aktiv adblock.conf utan att hämta ny lista ]----
+# --[ STATS: summera aktiv adblock.conf utan att hämta ny lista ]--
 adblock_stats() {
   local conf="$ADBLOCK_CONF"
-  local DQSM="/usr/sbin/dnsmasq"
   local domains_conf=0
   local blocked_24h=0
-
   if [ -f "$conf" ]; then
-    domains_conf=$(grep -E '^(address=|server=|local=|domain=)' "$conf" | grep -vE '^\s*#' | wc -l | tr -d ' ')
+    domains_conf=$(grep -E '^(address=|server=|local=|domain=)' "$conf" \
+      | grep -vE '^\s*\#' \
+      | wc -l \
+      | tr -d ' ' || true)
   fi
   blocked_24h=$(count_adblock_events)
-
   # Utskrift till stdout
   echo "[adblock-stats] conf_path=${conf}"
   echo "[adblock-stats] domains_in_conf=${domains_conf}"
   echo "[adblock-stats] blocked_replies_24h=${blocked_24h}"
-
   # Logga till adblock.log
   {
-    echo "=== $(date -u +"%Y-%m-%d %H:%M:%SZ") ==="
+    echo "=== $(date -u +'%Y-%m-%d %H:%M:%SZ') ==="
     echo "stats_only=1"
     echo "domains_in_conf=${domains_conf}"
     echo "blocked_replies_24h=${blocked_24h}"
     echo "conf_path=${conf}"
     echo
   } >> "$ADBLOCK_LOG"
-
   # Kort rad till runs.log
   echo "[adblock-stats] domains=${domains_conf} blocked_24h=${blocked_24h}" >> "${STATE_LOG}"
 }

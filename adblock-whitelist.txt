@@ -1,0 +1,79 @@
+# SVT & TV4
+svtplay.se
+svt.se
+tv4play.se
+tv4.se
+# Viaplay
+viaplay.se
+viaplay.com
+viaplaycdn.com
+# Discovery / Dplay
+dplay.se
+discoveryplus.se
+discoveryplus.com
+# HBO
+hbo.com
+hbomax.com
+hboeurope.com
+# Disney+
+disneyplus.com
+disney-plus.net
+bamgrid.com
+# Netflix
+netflix.com
+nflximg.net
+nflxvideo.net
+nflxso.net
+nflxext.com
+# Amazon Prime Video
+primevideo.com
+amazonvideo.com
+media-amazon.com
+# Rakuten TV
+rakuten.tv
+rakuten.com
+# Pluto TV
+pluto.tv
+plutotv.net
+# YouTube
+youtube.com
+ytimg.com
+googlevideo.com
+youtube-nocookie.com
+# Spotify
+spotify.com
+scdn.co
+audio-ak.spotify.com
+# Apple TV+ & Music
+apple.com
+apple-tv.apple.com
+itunes.apple.com
+music.apple.com
+# Plex
+plex.tv
+plex.direct
+# Deezer
+deezer.com
+# Eurosport Player
+eurosportplayer.com
+# Paramount+
+paramountplus.com
+paramountplus.se
+# Crunchyroll
+crunchyroll.com
+# Twitch
+twitch.tv
+ttvnw.net
+# DAZN
+dazn.com
+dazn-api.com
+daznservices.com
+# Red Bull TV
+redbull.tv
+rbcdn.com
+# SkyShowtime
+skyshowtime.com
+skyshowtimecdn.com
+# SoundCloud
+soundcloud.com
+sndcdn.com
