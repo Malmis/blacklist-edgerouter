@@ -602,7 +602,11 @@ build_adblock_sources() {
   if should_include "adguard"; then
     printf "%s\tadguard\n" "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" >> "$list_file"
   fi
-  # 5) Valfria extra källor via miljövariabel
+  # 5) Malmis DNS filter (ren domänlista)
+  if should_include "malmis"; then
+    printf "%s\tmalmis\n" "https://gist.githubusercontent.com/Malmis/bc21b32cfeeea93296cb901c878dfffe/raw/2c9713174aacf502e19680630be669dcbb3b068f/reklamblockering-edgemax.tx" >> "$list_file"
+  fi
+  # 6) Valfria extra källor via miljövariabel
   if [ -n "$ADBLOCK_EXTRA_URLS" ]; then
     for u in $ADBLOCK_EXTRA_URLS; do
       printf "%s\textra\n" "$u" >> "$list_file"
