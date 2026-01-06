@@ -322,11 +322,19 @@ EOF
   ok=$(awk -F'\t' '$2=="OK"{print $1}' "$status_file" | xargs echo || true)
   if [ -n "$failed" ]; then log "[cdn-summary] FAILED: $failed"; else log "[cdn-summary] FAILED: none"; fi
   log "[cdn-summary] OK: $ok"
+if [[ ! -s "$status_file" ]]; then
+  ok_count=0
+  fail_count=0
+else
+  ok_count=$(awk -F'\t' '$2=="OK"' "$status_file" | wc -l | tr -d ' ')
+  fail_count=$(awk -F'\t' '$2=="FAIL"' "$status_file" | wc -l | tr -d ' ')
+fi
+
   {
-    echo "[cdn-summary] ok_count=$(awk '$2==\"OK\"'  \"$status_file\" | wc -l | tr -d ' ') fail_count=$(awk '$2==\"FAIL\"' \"$status_file\" | wc -l | tr -d ' ')"
-    echo "[cdn-summary] ok: $ok"
-    echo "[cdn-summary] failed: ${failed:-none}"
-  } >> "${STATE_LOG}"
+  echo "[cdn-summary] ok_count=$ok_count fail_count=$fail_count"
+  echo "[cdn-summary] ok: $ok"
+  echo "[cdn-summary] failed: ${failed:-none}"
+} >> "${STATE_LOG}"
 
   echo "$out"
 }

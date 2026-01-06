@@ -779,6 +779,7 @@
 0.0.0.0 pulse.inmobi.com
 0.0.0.0 nonmutt.eastus.trafficmanager.inmobi.com
 0.0.0.0 nonmutt.sgp.trafficmanager.inmobi.com
+# [misc random]
 0.0.0.0 ad.samsungadhub.com
 0.0.0.0 analytics.facebook.com
 0.0.0.0 analyticsengine.s3.amazonaws.com
